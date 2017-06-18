@@ -5,13 +5,21 @@ import tensorflow as tf
 import csv 
 import re
 import json
-import matplotlib.pyplot as plt
 import time
+import math
+from pprint import pprint
+from gensim import corpora, models, similarities
+
+from Classifier import *
 
 class utils:
-    def parse_word(self, text_line):
+    """
+    Some common tools to use. Like parsing sentences, write and read json file.
+    """
+    def parse_line(self, text_line, parse_tool="re"):
         # Use regex to find out all words
-        return list(re.findall(re.compile("\w+"), text_line.lower())) # or to use \w+-*'*\w*
+        if parse_tool == "re":
+            return list(re.findall(re.compile("\w+'*\w*"), text_line.lower())) # or to use \w+-*'*\w*
     
     def write_to_json(self, obj, json_filepath="./none.json"):
         with open(json_filepath, "w") as f:
@@ -46,10 +54,14 @@ class utils:
     # For Summary: 8(90%), 9(95%), 12(98%), 19(99.9%)
 
 class dictionary(utils):
+    """
+    Class to count words and build dictionary for reviews.
+    """
     # Build a word dictionary
     word_dict = {}
     word_dict_rev = {}
     word_dict_freq = {}
+    gensim_dict = None
     
     json_filepath = "./word_dict.json"
     
@@ -57,7 +69,7 @@ class dictionary(utils):
         """
         count word in a given string, and add word to word_dict_freq count the occurence of words
         """
-        word_list = self.parse_word(text_line)
+        word_list = self.parse_line(text_line)
         for word in word_list:
             if word in self.word_dict_freq:
                 self.word_dict_freq[word] += 1
@@ -76,6 +88,12 @@ class dictionary(utils):
             self.word_dict[word] = i
             self.word_dict_rev[i] = word
             i += 1
+            
+    def generate_gensim_dictionary(self):
+        if self.word_dict != {} :
+                self.gensim_dict = corpora.Dictionary([list(self.word_dict.keys())])
+        else:
+            raise ValueError("word_dict is null, cannot generate gensim_dictionary")
     
     def save_dictionary_to_json(self, json_filepath=json_filepath):
         """
@@ -84,8 +102,20 @@ class dictionary(utils):
         """
         if json_filepath != None:
             self.json_filepath=json_filepath
-        with open(self.json_filepath, "w") as f:
-            json.dump([self.word_dict, self.word_dict_rev, self.word_dict_freq], f)
+        if self.word_dict != {}:
+            with open(self.json_filepath, "w") as f:
+                json.dump([self.word_dict, self.word_dict_rev, self.word_dict_freq], f)
+        else:
+            print("Trying to save an empty dictionary")
+    
+    def save_gensim_dictionary(self, gensim_dic_filepath="./word_dict.dict"):
+        if self.gensim_dict != None:
+            self.gensim_dict.save(gensim_dic_filepath)
+        else:
+            if self.word_dict != {} :
+                self.gensim_dict = corpora.Dictionary(self.word_dict.keys())
+                self.gensim_dict.save(gensim_dic_filepath)
+            
     
     def load_dictionary_from_json(self, json_filepath=None):
         """
@@ -101,6 +131,9 @@ class dictionary(utils):
         self.word_dict = temp_data[0]
         self.word_dict_rev = temp_data[1]
         self.word_dict_freq = temp_data[2]
+        
+    def load_gensim_dictionary(self, gensim_dic_filepath="./word_dict.dict"):
+        self.gensim_dict = corpora.Dictionary.load(gensim_dic_filepath)
     
     def turn_word_to_number(self,the_list):
         """
@@ -112,11 +145,18 @@ class dictionary(utils):
         return [self.word_dict[i] for i in the_list]
 
 class manipulate_comment_file(dictionary):
+    """
+    Main class to store data and store models, and provide some query methods
+    """
     comment_data = []
     train_data = []
     validate_data = []
     test_data = []
     field_name = []
+    current_form = "None"
+    corpus = {"summary":[],"text":[]}
+    models = {"summary":{}, "text":{}}
+    similarity = {"summary":None, "text":None}
     
     max_summary_length = 0
     max_text_length = 0
@@ -145,6 +185,7 @@ class manipulate_comment_file(dictionary):
             self.field_name = next(data)
             for row in data:
                 self.comment_data.append(row)
+        self.current_form = "raw file with only comment_data"
                 
     def generate_word_dict(self):
         if self.comment_data == {}:
@@ -170,12 +211,14 @@ class manipulate_comment_file(dictionary):
             text_length_count[text_len] += 1
     
     def split_data(self, percentage_of_vali=0.1, with_validate=True):
+        print("Going to split data with ",with_validate, "validation")
         if len(self.comment_data)==0:
             self.read_csv_file()
         validate_extract_interval = int(1/percentage_of_vali)
         validate_counter = 0
         # Clear all existing list to avoid redundance
         self.train_data=[];self.validate_data=[];self.test_data=[];
+        
         for ith in range(len(self.comment_data)):
             if self.comment_data[ith][4] == '':
                 # Data without level are test 
@@ -191,6 +234,183 @@ class manipulate_comment_file(dictionary):
                         validate_counter += 1
                 else:
                     self.train_data.append(self.comment_data[ith])
+        self.current_form = "Split csv raw file, with validate or without validate"
+                    
+    def set_all_data_aslist(self, list_of_data):
+        if len(list_of_data) == 4:
+            self.comment_data = list_of_data[0]
+            self.train_data   = list_of_data[1]
+            self.validate_data= list_of_data[2]
+            self.test_data    = list_of_data[3] 
+        elif len(list_of_data) == 3:
+            self.comment_data = list_of_data[0]
+            self.train_data   = list_of_data[1]
+            self.validate_data= []
+            self.test_data    = list_of_data[2]
+        else:
+            print("Input a list with length ", len(list_of_data))
+            
+    def transform_parse_summ_and_text_using_dictionary(self):
+        result = [[row for row in self.comment_data], [row for row in self.train_data], [row for row in self.validate_data], [row for row in self.test_data]]
+        dt = [self.comment_data, self.train_data, self.validate_data, self.test_data]
+        if self.word_dict_freq == {}:
+            self.load_dictionary_from_json()
+        for dt_index in range(len(dt)):
+            for i in range(len(dt[dt_index])):
+                if isinstance(dt[dt_index][i][5], str):
+                    result[dt_index][i][5] = self.turn_word_to_number(self.parse_line(dt[dt_index][i][5]))
+                if isinstance(dt[dt_index][i][6], str):
+                    result[dt_index][i][6] = self.turn_word_to_number(self.parse_line(dt[dt_index][i][6]))
+                if isinstance(dt[dt_index][i][4], str) and dt[dt_index][i][4] != '':
+                    result[dt_index][i][4] = int(dt[dt_index][i][4])
+        self.current_form = "Split data using word_dict.json turned to list of numbers"
+        return result
+    
+    def transform_semantic_basic(self):
+        result = [[row for row in self.comment_data], [row for row in self.train_data], [row for row in self.validate_data], [row for row in self.test_data]]
+        dt = [self.comment_data, self.train_data, self.validate_data, self.test_data]
+        words_to_remove = set("for a of the and to in on at or br so".split())
+        
+        if self.word_dict_freq == {}:
+            self.load_dictionary_from_json()
+        for dt_index in range(len(dt)):
+            for i in range(len(dt[dt_index])):
+                if isinstance(dt[dt_index][i][5], str):
+                    result[dt_index][i][5] = [word for word in (self.parse_line(dt[dt_index][i][5])) if ((word not in words_to_remove) and (self.word_dict_freq[word]>1))]
+                if isinstance(dt[dt_index][i][6], str):
+                    result[dt_index][i][6] = [word for word in (self.parse_line(dt[dt_index][i][6])) if ((word not in words_to_remove) and (self.word_dict_freq[word]>1))]
+                if isinstance(dt[dt_index][i][4], str) and dt[dt_index][i][4] != '':
+                    result[dt_index][i][4] = int(dt[dt_index][i][4])
+        self.current_form = "Split data turned to list of words and removed some low frequency words & irrelevant words"
+        return result
+    
+    def transform_to_vectors_using_gensim_dictionary(self, with_validate=True):
+        if with_validate:
+            result = [[row for row in self.comment_data], [row for row in self.train_data], [row for row in self.validate_data], [row for row in self.test_data]]
+            dt = [self.comment_data, self.train_data, self.validate_data, self.test_data]
+        else:
+            result = [[row for row in self.comment_data], [row for row in self.train_data], [row for row in self.test_data]]
+            dt = [self.comment_data, self.train_data, self.test_data]
+        words_to_remove = set("for a of the and to in on at or br so".split())
+        if self.word_dict_freq == {}:
+            self.load_dictionary_from_json()
+        for dt_index in range(len(dt)):
+            for i in range(len(dt[dt_index])):
+                if isinstance(dt[dt_index][i][5], str):
+                    result[dt_index][i][5] = self.gensim_dict.doc2bow([word for word in (self.parse_line(dt[dt_index][i][5])) if ((word not in words_to_remove) and (self.word_dict_freq[word]>1))])
+                if isinstance(dt[dt_index][i][6], str):
+                    result[dt_index][i][6] = self.gensim_dict.doc2bow([word for word in (self.parse_line(dt[dt_index][i][6])) if ((word not in words_to_remove) and (self.word_dict_freq[word]>1))])
+                if isinstance(dt[dt_index][i][4], str) and dt[dt_index][i][4] != '':
+                    result[dt_index][i][4] = int(dt[dt_index][i][4])
+        self.current_form = "Split data turned to gensim word vectors"
+        return result
+    
+    def generate_gensim_models(self, num_of_lsi_topics=5):
+        if self.corpus["summary"] == [] or self.corpus["text"] == []:
+            raise ValueError("Error corpus, no available corpus exist, cannot used to generate gensim models")
+        tfdif_summ = models.TfidfModel(self.corpus["summary"])
+        tfdif_text = models.TfidfModel(self.corpus["text"])
+        print("Finished tfdif wrapper initializer for summary and text")
+        lsi_after_tfdif_summ  = models.LsiModel(tfdif_summ[self.corpus["summary"]], id2word=self.gensim_dict, num_topics = num_of_lsi_topics)
+        lsi_after_tfdif_text  = models.LsiModel(tfdif_text[self.corpus["text"]], id2word=self.gensim_dict, num_topics = num_of_lsi_topics)
+        print("Finished lsi wrapper initializer for summary and text")
+        self.models["summary"]={"tfdif":tfdif_summ, "lsi_after_tfdif":lsi_after_tfdif_summ}
+        self.models["text"] = {"tfdif":tfdif_text, "lsi_after_tfdif":lsi_after_tfdif_text}
+        print("Saved models in class")
+        return [tfdif_summ, tfdif_text, lsi_after_tfdif_summ, lsi_after_tfdif_text]
+    
+    def generate_gensim_corpus(self, with_validate=True):
+        """
+        Require train_data already become vector after transform_to_vectors_using_gensim_dictionary
+        """
+        self.split_data(with_validate=with_validate)
+        for comp in self.corpus:
+            self.corpus[comp]=[]
+        for row in self.train_data:
+#             print("train data length",len(self.train_data), row)
+            self.corpus["summary"].append(row[5])
+            self.corpus["text"].append(row[6])
+        print("Generated list of summary corpus at corpus[summary], length: ", len(self.corpus["summary"]))
+        print("Generated list of    text corpus at corpus[text]   , length: ", len(self.corpus["text"]))
+        self.save_serialize_corpus()
+        self.load_serialize_corpus()
+    
+    def generate_similarity_structure(self, model_to_use, corpus_to_use="text"):
+        if self.similarity[corpus_to_use] == None:
+            self.similarity[corpus_to_use] = similarities.MatrixSimilarity(model_to_use[self.corpus[corpus_to_use]])
+        
+    def run_similarity(self, input_data, corpus_to_use="text"):
+        """
+        Require similarity_structure generated before use. 
+        Input data:
+            Input data should after analysis of model, the model used in input_data should be the same as similarity structure
+        """
+        if self.similarity[corpus_to_use] != None and isinstance(input_data, list):
+            return self.similarity[corpus_to_use][input_data]
+        else:
+            raise ValueError("Null similarity_structure or error input_data type")
+        
+    def run_data_in_model(self, input_data, model_to_use):
+        return model_to_use[input_data]
+        
+    def save_similarity_structure(self):
+        if self.similarity != None:
+            self.similarity.save("./similarity_structure.index")
+    
+    def load_similarity_structure(self):
+        self.similarity = similarities.MatrixSimilarity.load("./similarity_structure.index")
+    
+    def save_gensim_models(self):
+        if self.models["summary"] == {} and self.models["text"] == {}:
+            self.generate_gensim_models()
+        for text_name in self.models:
+            for model_name in self.models[text_name]:
+                self.models[text_name][model_name].save("./"+text_name+"_"+model_name+".model")
+        print("All models saved")
+            
+    
+    def load_gensim_models(self):
+        self.models["summary"]["tfdif"] = models.TfidfModel.load("./summary_tfdif.model")
+        self.models["summary"]["lsi_after_tfdif"] = models.LsiModel.load("./summary_lsi_after_tfdif.model")
+        self.models["text"]["tfdif"] = models.TfidfModel.load("./text_tfdif.model")
+        self.models["text"]["lsi_after_tfdif"] = models.LsiModel.load("./text_lsi_after_tfdif.model")
+        print("Successful load models tfdif and lsi_after_tfdif")
+    
+    def save_serialize_corpus(self):
+        """Still have bug, need to detect corpus type before saving."""
+        if self.corpus["summary"] != [] and isinstance(self.corpus["summary"], list) and self.corpus["text"] != [] and isinstance(self.corpus["text"], list):
+            corpora.MmCorpus.serialize("./train_summary.mm", self.corpus["summary"])
+            corpora.MmCorpus.serialize("./train_text.mm", self.corpus["text"])
+        else:
+            self.generate_gensim_corpus(with_validate=True)
+            corpora.MmCorpus.serialize("./train_summary.mm", self.corpus["summary"])
+            corpora.MmCorpus.serialize("./train_text.mm", self.corpus["text"])
+        print("Saved corpus of summary and text to local files")
+        
+    def load_serialize_corpus(self):
+        self.corpus["summary"] = corpora.MmCorpus("./train_summary.mm")
+        self.corpus["text"] = corpora.MmCorpus("./train_text.mm")
+        print("Loaded summary corpus and text corpus", self.corpus["summary"], self.corpus["text"])
+    
+    def save_all_data_to_local(self):
+        self.write_to_json(self.comment_data, "./whole_data.json")
+        self.write_to_json(self.train_data, "./train_data.json")
+        self.write_to_json(self.validate_data, "./validate_data.json")
+        self.write_to_json(self.test_data, "./test_data.json")
+        self.save_dictionary_to_json("./word_dict.json")
+        self.save_gensim_dictionary("./word_dict.dict")
+        self.save_serialize_corpus()
+        self.save_gensim_models()
+    
+    def load_all_data_from_local(self):
+        self.comment_data = self.read_from_json("./whole_data.json")
+        self.train_data   = self.read_from_json("./train_data.json")
+        self.validate_data= self.read_from_json("./validate_data.json")
+        self.test_data    = self.read_from_json("./test_data.json")
+        self.load_dictionary_from_json("./word_dict.json")
+        self.load_gensim_dictionary("./word_dict.dict")
+        self.load_serialize_corpus()
+        self.load_gensim_models()
     
     def lazy_eval_forlist(self, input_list=comment_data):
         m=0
@@ -202,29 +422,6 @@ class manipulate_comment_file(dictionary):
             if m > length_of_input:
                 cycle_count += 1
             m = m % length_of_input
-    def parse_summ_and_text_using_dictionary(self):
-        if self.word_dict != {}:
-            for dt in [self.comment_data, self.train_data, self.validate_data, self.test_data]:
-                for i in range(len(dt)):
-                    if isinstance(dt[i][5], str):
-                        dt[i][5] = self.turn_word_to_number(self.parse_word(dt[i][5]))
-                    if isinstance(dt[i][6], str):
-                        dt[i][6] = self.turn_word_to_number(self.parse_word(dt[i][6]))
-                    if isinstance(dt[i][4], str) and dt[i][4] != '':
-                        dt[i][4] = int(dt[i][4])
-    
-    def save_all_data_to_local_json(self):
-        self.write_to_json(self.comment_data, "./whole_data.json")
-        self.write_to_json(self.train_data, "./train_data.json")
-        self.write_to_json(self.validate_data, "./validate_data.json")
-        self.write_to_json(self.test_data, "./test_data.json")
-    
-    def load_all_data_from_local_json(self):
-        self.comment_data = self.read_from_json("./whole_data.json")
-        self.train_data   = self.read_from_json("./train_data.json")
-        self.validate_data= self.read_from_json("./validate_data.json")
-        self.test_data    = self.read_from_json("./test_data.json")
-        self.load_dictionary_from_json("./word_dict.json")
 
     def lazy_eval_forlist_batch(self, input_list=comment_data, batch_size=100):
         lazy_eval_forlist_one = self.lazy_eval_forlist(input_list)
@@ -261,24 +458,27 @@ class manipulate_comment_file(dictionary):
                 result_dict[row[position]] = [row]
         return result_dict
     
-    def filter_at_position(self, filter, position=4):
+    def filter_at_position(self, filter_content, position=4):
         """
         This is return a dictionary, key is the value in position and value is rows with that key
         Input: 
-            filter: rows at that position have same content will be returned 
+            filter_content: rows at that position have same content will be returned 
             position: position in train_data, integer in [0,8]
         Return: dict ({id:list of rows}) 
         """
         # make sure train_data is not empty
         if len(self.train_data) == 0:
             self.split_data(0.1)
-        result_dict = {filter:[]}
+        result_dict = {filter_content:[]}
         for row in self.train_data:
-            if row[position] == filter:
-                result_dict[filter].append(row)
+            if row[position] == filter_content:
+                result_dict[filter_content].append(row)
         return result_dict
 
 class machine_learning_classifier():
+    """
+    Use tensorflow to run LSTM. Different from other classifier
+    """
     def get_default_gpu_session(self,fraction=0.333):
         config = tf.ConfigProto(allow_soft_placement=True)
         config.gpu_options.allow_growth = True
@@ -383,45 +583,180 @@ class machine_learning_classifier():
                         print("Epoch ",epoch_i, " Iteration ", epoch_i*iterations_one_epoch+i, ", with loss ", loss_val, "validate accuracy is ",accu, ", and prediction is ",pred)
                         sum_writer.flush()
 
-class normal_classifiers():
-    a=1
+class normal_classifiers(utils):
+    """
+    A class to use lots of different classifiers to get final result
+    """
+    classifiers = []
+    classifiers_weight = []
+    descending_update_rate = 0 # need to be set before training
+    def set_classifiers(self, classifiers_list):
+        if isinstance(classifiers_list, list):
+            self.classifiers=classifiers_list
+        else:
+            print("Error in setting classifiers, classifiers_list should be a list")
+        
+    def get_result(self, input_data):
+        """
+        By using classifier in classifiers, get prediction result. 
+        Return:
+            list [rounded prediction after weight, [all predictions given by classifiers]]
+        """
+        if len(self.classifiers_weight) != self.classifiers:
+            self.classifiers_weight = [1/len(self.classifiers) for _ in range(len(self.classifiers))]
+        result = []
+        for cls in self.classifiers:
+            result.append(cls.run(input_data))
+        weighted_result=round(sum([i*j for i, j in zip(result, self.classifiers_weight)]))
+        return [round(weighted_result), result]
+    
+    def run_test_data(self, mcf_class, test_flag=False, des_filepath="./fuck.csv", get_data_id_filepath="./test.csv", round_name="default"):
+        with open(des_filepath, "w", newline="") as csvfile, open(get_data_id_filepath,"r") as testfile:
+            csvwriter = csv.writer(csvfile, delimiter=",")
+            csvreader = csv.reader(testfile, delimiter=",")
+            csvwriter.writerow(next(csvreader))
+            i = 0
+            full_len = len(mcf_class.test_data)
+            for row in mcf_class.test_data:
+                result = self.get_result(row)
+                csvwriter.writerow([int(row[2]), int(result[0])])
+#             for row in csvreader:
+#                 filter_dict = mcf_class.filter_at_position(str(row[0]), position=2)
+#                 for data in filter_dict:
+#                     if filter_dict[data] == []:
+#                         raise ValueError("Record not found")
+#                     print(data, filter_dict[data])
+#                     result = self.get_result(filter_dict[data])
+#                 csvwriter.writerow([row[0], result[0]])
+                i += 1
+                if i % int(full_len*0.001) == 0:
+                    print("Round ",round_name," Evaluation ",100*i/full_len,"% finished")
+                if test_flag:
+                    if i > 500:
+                        break
+                
+    
+    def calculate_accuracy(self, input_data_row_list, update_weight_flag=False):
+        if not isinstance(input_data_row_list, list):
+            print("Error input in calculate_accurary, input should be a list")
+            return
+        full_length = len(input_data_row_list)
+        correct_num = 0
+        for row in input_data_row_list:
+            return_of_evalaution = self.get_result(row)
+            if int(row[4]) == int(return_of_evalaution[0]):
+                correct_num += 1
+            if update_weight_flag:
+                self.update_weight(row[4], return_of_evalaution[1])
+        return correct_num/full_length
+    
+    def update_rate_convergence(self, start_rate=0.1, converge_speed=0.0001):
+        i = 0
+        while True:
+            yield start_rate*math.exp(-i*converge_speed)
+            i += 1
+        
+    def update_weight(self, correct_result, classifiers_result):
+        if len(classifiers_result) != len(self.classifiers_weight):
+            print("Error result input")
+            return
+        correct_result = int(correct_result)
+        temp_weight = []
+        for i in range(len(classifiers_result)):
+            temp_weight.append(self.classifiers_weight[i]*1.2*math.exp(-0.9*abs(correct_result-classifiers_result[i])))
+        # Normalize the weight
+        sum_weight = sum(temp_weight)
+        for i in range(len(self.classifiers_weight)):
+            self.classifiers_weight[i] = temp_weight[i]/sum_weight
 
 if __name__ == "__main__":
-    ### Read data from csv file and build a class to store it
+    time0 = time.time()
+    
+    ### BLOCK 1: Read data from csv file and build a class to store it, this is needed all the time
     data = manipulate_comment_file("./train.csv")
+    data.read_csv_file() # Read csv file
+    with_validate_flag = False
+    data.split_data(0.1, with_validate=with_validate_flag) # split data to train, validate and test, if with_validate=False, then no validate data will generate
     
-    ### All these are used to generate dictionary
-#     data.read_csv_file()
-#     data.generate_word_dict()
-    
-    ### All these are used for raw csv comment file
-#     data.read_csv_file() # Read csv file
-#     data.split_data(0.1) # split data to train, validate and test
-#     data.read_word_dict_json()
-#     data.parse_summ_and_text_using_dictionary()
-#     data.save_all_data_to_local_json()
+    ### BLOCK 2: If this is first time running, run this
+    data.generate_word_dict() # Generate word dictionary using all summaries and texts
+    data.generate_gensim_dictionary() # Generate gensim dictionary using word dictionary generated above
+    data.save_gensim_dictionary() # Save gensim dictionary to local, so next time only need to load from local
+    data.set_all_data_aslist(data.transform_to_vectors_using_gensim_dictionary(with_validate=with_validate_flag)) # transform all data (including training data, validate data, test data and original all data), with_validate should be the same as above
+    data.generate_gensim_corpus(with_validate=with_validate_flag) # Generate stream like gensim corpus using gensim dictionary, with_validate should be the same as above
+    data.generate_gensim_models(num_of_lsi_topics=93) # Generate gensim LSA model. The number of topics Get from Johnson-Lindenstrause Lemma
+    data.save_gensim_models() # Save models to local files so next time can run directly
 
-    ### Use saved json file to load data
-    data.load_all_data_from_local_json()
-
-#     groupby_score = data.group_by_position(3)
-#     for i in groupby_score:
-#         print("The key: ",i, " length: ",len(groupby_score[i]))
-#     print("The total ids in this is ", len(groupby_score))
-    for fil in range(1,6,1):
-        filtered = data.filter_at_position(fil, 4)
-        for i in filtered:
-            print("The key: ",i, " length: ",len(filtered[i]))
+    ### BLOCK 3: If all files already exist in local (including all the dictionaries), run this
+#     data.load_gensim_dictionary()
+#     data.load_serialize_corpus()
+#     data.load_gensim_models()
+#     print(data.corpus["summary"], data.corpus["text"])    
+#     print(data.models["summary"]["lsi_after_tfdif"].print_topics(5))
+#     print(data.models["text"]["lsi_after_tfdif"].print_topics(5))
     
-    ### Try to use machine learning, but failed. All predictions finally are 5
+    ### BLOCK 4: This is block is not recommended. Takes about 10 Gb memory
+#     data.save_all_data_to_local()
+#     data.load_all_data_from_local()
+
+    ### BLOCK 5: For training classifier weight and try test. And use this to compare between classifiers
+#     le_get_train = data.lazy_eval_forlist_batch(input_list=data.train_data, batch_size=100)
+#     ct.descending_update_rate=ct.update_rate_convergence(converge_speed=0.001)
+#     number_epoch = 5
+#     time1 = time.time()
+#     for _ in range(number_epoch):
+#         accu = ct.calculate_accuracy(next(le_get_train), update_weight_flag=True)
+#         print("Accuracy: ", accu)
+#     print("Weight for classifiers: ",ct.classifiers_weight)
+    
+#     ct.run_test_data(data, test_flag=True, des_filepath="./only_text_result.csv")
+#
+#     le_get_train = data.lazy_eval_forlist_batch(input_list=data.validate_data, batch_size=100)
+#     ct.descending_update_rate=ct.update_rate_convergence(converge_speed=0.001)
+#     for _ in range(100):
+#         accu = ct.calculate_accuracy(next(le_get_train), update_weight_flag=False)
+#         print("Predict accuracy: ", accu)
+
+    ### BLOCK 6: Set classifiers weight and try test, also can let it learn training weight by using validate data
+#    # Use highest similarity score get from text only
+#     ct = normal_classifiers() # 1.08682
+#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, False)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
+#     ct.run_test_data(data, test_flag=False, des_filepath="./only_text_result.csv", round_name="only_text")
+#     # Use highest similarity score get from summary only
+#     ct = normal_classifiers() # 1.40877
+#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, True)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
+#     ct.run_test_data(data, test_flag=False, des_filepath="./only_summary_result.csv", round_name="only_summary")
+#     # Use the average score of highest similarity get from summary and text
+#     ct = normal_classifiers() # 1.04402 in 5 LSI topics, 0.92451 in 93 LSI topics
+#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, False),classifier_semantic_analysis_highest(data, True)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
+#     ct.classifiers_weight = [0.5, 0.5]
+#     ct.run_test_data(data, test_flag=False, des_filepath="./text_summary_highest_result.csv", round_name="text+summary")
+    # Use highest similarity in text, highest similarity in summary and average of highest few similarity in summary to predict. Weight of them is 0.4, 0.3, 0.3
+    ct = normal_classifiers() # 0.95101
+    ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, False),classifier_semantic_analysis_highest(data, True), classifier_semantic_analysis_average(data, 3, True)]) 
+    ct.classifiers_weight = [0.4, 0.3, 0.3]
+    ct.run_test_data(data, test_flag=False, des_filepath="./text_summary_ave_mixture.csv", round_name="text+summary+ave_summ")
+#     # Use highest similarity in text and highest similarity in summary, but use different weight 0.435, 0.565 (get from validation training)
+#     ct = normal_classifiers() # 1.04468 Quite similar, not need of change
+#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, False),classifier_semantic_analysis_highest(data, True)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
+#     ct.classifiers_weight = [0.435, 0.565]
+#     ct.run_test_data(data, test_flag=False, des_filepath="./text_summary_highest_result_reweight.csv", round_name="text+summary reweight")
+    
+    
+    ### BLOCK 7: Try to use machine learning, but failed. All predictions finally are 5. Should change model. 
+#    # Use text for learning
 #     ledata = data.lazy_eval_forlist_batch_text(data.train_data, batch_size=100)
 #     vali_ledata = data.lazy_eval_forlist_batch_text(data.validate_data, batch_size=100)
+#     train_ml = machine_learning_classifier()
+#     train_ml.run_amazon_review_feature_extract(ledata, vali_ledata, feature_num=10, training_size=len(data.train_data), lstm_cell_num=380)
+#    # Use summary for learning
 #     ledata = data.lazy_eval_forlist_batch_summ(data.train_data, batch_size=1)
 #     vali_ledata = data.lazy_eval_forlist_batch_summ(data.validate_data, batch_size=1)
 #     train_ml = machine_learning_classifier()
 #     train_ml.run_amazon_review_feature_extract(ledata, vali_ledata, feature_num=10, training_size=len(data.train_data), lstm_cell_num=20)
-
     ### 
     
-    
+    ### BLOCK 8: Only for test and estimate running time. No need to use this part
+#     time2 = time.time()
+#     print("Cost time ",time1-time0," ,in loading, ", time2-time1, " in running, average per record is ", (time2-time1)/(100*number_epoch), " and estimate running time for test data is ",(time2-time1)*len(data.test_data)/(100*number_epoch))
 
