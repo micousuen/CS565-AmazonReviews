@@ -185,8 +185,8 @@ class manipulate_comment_file(dictionary):
             self.field_name = next(data)
             for row in data:
                 self.comment_data.append(row)
-        self.current_form = "raw file with only comment_data"
-                
+        self.current_form = "raw file with only comment_data"        
+    
     def generate_word_dict(self):
         if self.comment_data == {}:
             self.read_csv_file()
@@ -249,7 +249,43 @@ class manipulate_comment_file(dictionary):
             self.test_data    = list_of_data[2]
         else:
             print("Input a list with length ", len(list_of_data))
-            
+    
+    def transform_append_product_people_info_to_position(self, position=5, add_product_id=True, add_user_id=True):
+        """
+        Add product information into consideration. 
+        This is definitely bring extra distance when evaluate two review, but could work. 
+        Make sure all product id and user id and things at position are strings
+        That means, data at position should be a string
+        Input: 
+            position: int, should be 5(add to summary) or 6(add to text)
+        """
+        result = [[row for row in self.comment_data], [row for row in self.train_data], [row for row in self.validate_data], [row for row in self.test_data]]
+        dt = [self.comment_data, self.train_data, self.validate_data, self.test_data]
+        for dt_index in range(len(dt)):
+            for i in range(len(dt[dt_index])):
+                if isinstance(dt[dt_index][i][position], str):
+                    if add_product_id and add_user_id:
+                        if isinstance(dt[dt_index][i][3], str) and isinstance(dt[dt_index][i][8], str):
+                            result[dt_index][i][position] = dt[dt_index][i][3]+" "+dt[dt_index][i][8]+" "+dt[dt_index][i][position]
+                        else:
+                            raise ValueError("Product ID and User ID are not strings, cannot add to position")
+                    elif add_product_id:
+                        if isinstance(dt[dt_index][i][3], str):
+                            result[dt_index][i][position] = dt[dt_index][i][3]+" "+dt[dt_index][i][position]
+                        else:
+                            raise ValueError("Product ID are not strings, cannot add to position")
+                    elif add_user_id:
+                        if isinstance(dt[dt_index][i][8], str):
+                            result[dt_index][i][position] = dt[dt_index][i][8]+" "+dt[dt_index][i][position]
+                        else:
+                            raise ValueError("User ID are not strings, cannot add to position")
+                    else:
+                        print("You plan to adding nothing, why call me ?!")
+                else:
+                    raise ValueError("At position "+str(position)+" there should be string, but detected other thing")
+        self.current_form = "Added Product ID or User ID to position "+str(position)
+        return result
+         
     def transform_parse_summ_and_text_using_dictionary(self):
         result = [[row for row in self.comment_data], [row for row in self.train_data], [row for row in self.validate_data], [row for row in self.test_data]]
         dt = [self.comment_data, self.train_data, self.validate_data, self.test_data]
@@ -353,12 +389,14 @@ class manipulate_comment_file(dictionary):
     def run_data_in_model(self, input_data, model_to_use):
         return model_to_use[input_data]
         
-    def save_similarity_structure(self):
+    def save_similarity_structure(self,corpus_to_use="text"):
         if self.similarity != None:
-            self.similarity.save("./similarity_structure.index")
+            self.similarity[corpus_to_use].save("./similarity_structure_"+corpus_to_use+".index")
+            print("Saved similarity structure to ","similarity_structure_"+corpus_to_use)
     
-    def load_similarity_structure(self):
-        self.similarity = similarities.MatrixSimilarity.load("./similarity_structure.index")
+    def load_similarity_structure(self,corpus_to_use="text"):
+        self.similarity[corpus_to_use] = similarities.MatrixSimilarity.load("./similarity_structure_"+corpus_to_use+".index")
+        print("Loaded similarity structure from ","similarity_structure_"+corpus_to_use)
     
     def save_gensim_models(self):
         if self.models["summary"] == {} and self.models["text"] == {}:
@@ -610,7 +648,10 @@ class normal_classifiers(utils):
         weighted_result=round(sum([i*j for i, j in zip(result, self.classifiers_weight)]))
         return [round(weighted_result), result]
     
-    def run_test_data(self, mcf_class, test_flag=False, des_filepath="./fuck.csv", get_data_id_filepath="./test.csv", round_name="default"):
+    def run_test_data(self, mcf_class, test_flag=False, des_filepath="./des.csv", get_data_id_filepath="./test.csv", round_name="default"):
+        """
+        test_flag only used in testing model. Should set to False when actual running. 
+        """
         with open(des_filepath, "w", newline="") as csvfile, open(get_data_id_filepath,"r") as testfile:
             csvwriter = csv.writer(csvfile, delimiter=",")
             csvreader = csv.reader(testfile, delimiter=",")
@@ -675,7 +716,9 @@ if __name__ == "__main__":
     ### BLOCK 1: Read data from csv file and build a class to store it, this is needed all the time
     data = manipulate_comment_file("./train.csv")
     data.read_csv_file() # Read csv file
+    data.set_all_data_aslist(data.transform_append_product_people_info_to_position(5, add_product_id=True, add_user_id=True))
     with_validate_flag = False
+    use_saved_similarity_structure = False
     data.split_data(0.1, with_validate=with_validate_flag) # split data to train, validate and test, if with_validate=False, then no validate data will generate
     
     ### BLOCK 2: If this is first time running, run this
@@ -684,13 +727,16 @@ if __name__ == "__main__":
     data.save_gensim_dictionary() # Save gensim dictionary to local, so next time only need to load from local
     data.set_all_data_aslist(data.transform_to_vectors_using_gensim_dictionary(with_validate=with_validate_flag)) # transform all data (including training data, validate data, test data and original all data), with_validate should be the same as above
     data.generate_gensim_corpus(with_validate=with_validate_flag) # Generate stream like gensim corpus using gensim dictionary, with_validate should be the same as above
-    data.generate_gensim_models(num_of_lsi_topics=93) # Generate gensim LSA model. The number of topics Get from Johnson-Lindenstrause Lemma
+    data.generate_gensim_models(num_of_lsi_topics=372) # Generate gensim LSA model. The number of topics Get from Johnson-Lindenstrause Lemma
     data.save_gensim_models() # Save models to local files so next time can run directly
+    use_saved_similarity_structure = False
 
     ### BLOCK 3: If all files already exist in local (including all the dictionaries), run this
 #     data.load_gensim_dictionary()
 #     data.load_serialize_corpus()
 #     data.load_gensim_models()
+#     data.set_all_data_aslist(data.transform_to_vectors_using_gensim_dictionary(with_validate=with_validate_flag)) # transform all data (including training data, validate data, test data and original all data), with_validate should be the same as above
+#     use_saved_similarity_structure = True
 #     print(data.corpus["summary"], data.corpus["text"])    
 #     print(data.models["summary"]["lsi_after_tfdif"].print_topics(5))
 #     print(data.models["text"]["lsi_after_tfdif"].print_topics(5))
@@ -718,30 +764,27 @@ if __name__ == "__main__":
 #         print("Predict accuracy: ", accu)
 
     ### BLOCK 6: Set classifiers weight and try test, also can let it learn training weight by using validate data
-#    # Use highest similarity score get from text only
+    # Use highest similarity score get from text only
 #     ct = normal_classifiers() # 1.08682
-#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, False)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
+#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, use_summary=False, use_saved_similarity=use_saved_similarity_structure)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
 #     ct.run_test_data(data, test_flag=False, des_filepath="./only_text_result.csv", round_name="only_text")
-#     # Use highest similarity score get from summary only
+    # Use highest similarity score get from summary only
 #     ct = normal_classifiers() # 1.40877
-#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, True)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
+#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, use_summary=True, use_saved_similarity=use_saved_similarity_structure)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
 #     ct.run_test_data(data, test_flag=False, des_filepath="./only_summary_result.csv", round_name="only_summary")
-#     # Use the average score of highest similarity get from summary and text
-#     ct = normal_classifiers() # 1.04402 in 5 LSI topics, 0.92451 in 93 LSI topics
-#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, False),classifier_semantic_analysis_highest(data, True)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
+    # Use the average score of highest similarity get from summary and text
+#     ct = normal_classifiers() 
+#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, use_summary=False, use_saved_similarity=use_saved_similarity_structure),\
+#                                          classifier_semantic_analysis_highest(data, use_summary=True, use_saved_similarity=use_saved_similarity_structure)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
 #     ct.classifiers_weight = [0.5, 0.5]
 #     ct.run_test_data(data, test_flag=False, des_filepath="./text_summary_highest_result.csv", round_name="text+summary")
     # Use highest similarity in text, highest similarity in summary and average of highest few similarity in summary to predict. Weight of them is 0.4, 0.3, 0.3
-    ct = normal_classifiers() # 0.95101
-    ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, False),classifier_semantic_analysis_highest(data, True), classifier_semantic_analysis_average(data, 3, True)]) 
+    ct = normal_classifiers() 
+    ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, use_summary=False, use_saved_similarity=use_saved_similarity_structure),\
+                                         classifier_semantic_analysis_highest(data, use_summary=True, use_saved_similarity=use_saved_similarity_structure), \
+                                         classifier_semantic_analysis_average(data, 5, use_summary=True, use_saved_similarity=use_saved_similarity_structure)]) 
     ct.classifiers_weight = [0.4, 0.3, 0.3]
     ct.run_test_data(data, test_flag=False, des_filepath="./text_summary_ave_mixture.csv", round_name="text+summary+ave_summ")
-#     # Use highest similarity in text and highest similarity in summary, but use different weight 0.435, 0.565 (get from validation training)
-#     ct = normal_classifiers() # 1.04468 Quite similar, not need of change
-#     ct.set_classifiers(classifiers_list=[classifier_semantic_analysis_highest(data, False),classifier_semantic_analysis_highest(data, True)]) #classifier_semantic_analysis_highest(data), classifier_semantic_analysis_average(data, 10)
-#     ct.classifiers_weight = [0.435, 0.565]
-#     ct.run_test_data(data, test_flag=False, des_filepath="./text_summary_highest_result_reweight.csv", round_name="text+summary reweight")
-    
     
     ### BLOCK 7: Try to use machine learning, but failed. All predictions finally are 5. Should change model. 
 #    # Use text for learning

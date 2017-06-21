@@ -67,22 +67,28 @@ class classifier_semantic_analysis_highest:
     """
     local_mcf_ref = None
     is_summary = True
-    def __init__(self, mcf_class, use_summary=True):
+    corpus_to_use = "summary"
+    data_position = 5
+    def __init__(self, mcf_class, use_summary=True, use_saved_similarity=False):
         self.Usage = "Use gensim in mcf_class to get new similar document and score"
         self.local_mcf_ref = mcf_class
         self.is_summary = use_summary
-        if self.is_summary:
-            self.local_mcf_ref.generate_similarity_structure(model_to_use=self.local_mcf_ref.models["summary"]["lsi_after_tfdif"], corpus_to_use="summary")
+        if not use_summary:
+            self.corpus_to_use = "text"
+            self.data_position = 6
+        if not use_saved_similarity:
+            self.local_mcf_ref.generate_similarity_structure(model_to_use=self.local_mcf_ref.models[self.corpus_to_use]["lsi_after_tfdif"], corpus_to_use=self.corpus_to_use)
+            self.local_mcf_ref.save_similarity_structure(self.corpus_to_use)
         else:
-            self.local_mcf_ref.generate_similarity_structure(model_to_use=self.local_mcf_ref.models["text"]["lsi_after_tfdif"], corpus_to_use="text")
+            try:
+                self.local_mcf_ref.load_similarity_structure(self.corpus_to_use)
+            except :
+                self.local_mcf_ref.generate_similarity_structure(model_to_use=self.local_mcf_ref.models[self.corpus_to_use]["lsi_after_tfdif"], corpus_to_use=self.corpus_to_use)
+                self.local_mcf_ref.save_similarity_structure(self.corpus_to_use)
             
     def run(self, input_data):
-        if self.is_summary:
-            data_after_model = self.local_mcf_ref.run_data_in_model(input_data[5], model_to_use=self.local_mcf_ref.models["summary"]["lsi_after_tfdif"])
-            similarity_list  = self.local_mcf_ref.run_similarity(data_after_model, "summary")
-        else:
-            data_after_model = self.local_mcf_ref.run_data_in_model(input_data[6], model_to_use=self.local_mcf_ref.models["text"]["lsi_after_tfdif"])
-            similarity_list  = self.local_mcf_ref.run_similarity(data_after_model, "text")
+        data_after_model = self.local_mcf_ref.run_data_in_model(input_data[self.data_position], model_to_use=self.local_mcf_ref.models[self.corpus_to_use]["lsi_after_tfdif"])
+        similarity_list  = self.local_mcf_ref.run_similarity(data_after_model, self.corpus_to_use)
         max_index = similarity_list.argmax()
         highest_similarity_score = int(self.local_mcf_ref.train_data[max_index][4])
         return highest_similarity_score
@@ -95,23 +101,29 @@ class classifier_semantic_analysis_average:
     local_mcf_ref = None
     num_of_highest_score_to_average = 10
     is_summary = True
-    def __init__(self, mcf_class, num_of_higest_score_to_average, use_summary = True):
+    corpus_to_use = "summary"
+    data_position = 5
+    def __init__(self, mcf_class, num_of_higest_score_to_average, use_summary = True, use_saved_similarity=False):
         self.Usage = "Use gensim in mcf_class to get new similar document and score"
         self.local_mcf_ref = mcf_class
         self.is_summary = use_summary
-        if self.is_summary:
-            self.local_mcf_ref.generate_similarity_structure(model_to_use=self.local_mcf_ref.models["summary"]["lsi_after_tfdif"], corpus_to_use="text")
+        if not use_summary:
+            self.corpus_to_use = "text"
+            self.data_position = 6
+        if not use_saved_similarity:
+            self.local_mcf_ref.generate_similarity_structure(model_to_use=self.local_mcf_ref.models[self.corpus_to_use]["lsi_after_tfdif"], corpus_to_use=self.corpus_to_use)
+            self.local_mcf_ref.save_similarity_structure(self.corpus_to_use)
         else:
-            self.local_mcf_ref.generate_similarity_structure(model_to_use=self.local_mcf_ref.models["text"]["lsi_after_tfdif"], corpus_to_use="text")
+            try:
+                self.local_mcf_ref.load_similarity_structure(self.corpus_to_use)
+            except :
+                self.local_mcf_ref.generate_similarity_structure(model_to_use=self.local_mcf_ref.models[self.corpus_to_use]["lsi_after_tfdif"], corpus_to_use=self.corpus_to_use)
+                self.local_mcf_ref.save_similarity_structure(self.corpus_to_use)
         self.num_of_highest_score_to_average = num_of_higest_score_to_average
 
     def run(self, input_data):
-        if self.is_summary:
-            data_after_model = self.local_mcf_ref.run_data_in_model(input_data[5], model_to_use=self.local_mcf_ref.models["summary"]["lsi_after_tfdif"])
-            similarity_list  = self.local_mcf_ref.run_similarity(data_after_model, "summary")
-        else:
-            data_after_model = self.local_mcf_ref.run_data_in_model(input_data[6], model_to_use=self.local_mcf_ref.models["text"]["lsi_after_tfdif"])
-            similarity_list  = self.local_mcf_ref.run_similarity(data_after_model, "text")
+        data_after_model = self.local_mcf_ref.run_data_in_model(input_data[self.data_position], model_to_use=self.local_mcf_ref.models[self.corpus_to_use]["lsi_after_tfdif"])
+        similarity_list  = self.local_mcf_ref.run_similarity(data_after_model, self.corpus_to_use)
         first_N_largest = heapq.nlargest(self.num_of_highest_score_to_average, range(len(similarity_list)), similarity_list.take)
         sum_of_similarity_score = 0
         for i in first_N_largest:
